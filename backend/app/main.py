@@ -317,6 +317,8 @@ def startup() -> None:
         trigger_upload(DB_FILE)
 
 
+@app.get("/", tags=["System"])
+@app.get("/health", tags=["System"])
 @app.get("/api/health", tags=["System"])
 def health() -> dict[str, str]:
     return {"status": "ok", "service": "team-tenacious-interoperability-api", "version": app.version}
