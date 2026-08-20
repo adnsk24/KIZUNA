@@ -8,10 +8,23 @@ from pathlib import Path
 
 logger = logging.getLogger("kizuna.cloud_db")
 
-PROJECT_REF = os.environ.get("SUPABASE_PROJECT_REF")
-SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 BUCKET_NAME = os.environ.get("SUPABASE_BUCKET_NAME", "kizuna-db")
 DB_FILENAME = "kizuna.db"
+
+def _get_clean_project_ref() -> str | None:
+    ref = os.environ.get("SUPABASE_PROJECT_REF")
+    if not ref:
+        return None
+    return ref.strip().strip("'\"")
+
+def _get_clean_service_key() -> str | None:
+    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    if not key:
+        return None
+    key = key.strip().strip("'\"")
+    if key.lower().startswith("bearer "):
+        key = key[7:].strip()
+    return key
 
 # Background worker queue for uploads
 _upload_queue = queue.Queue()
@@ -19,9 +32,12 @@ _worker_started = False
 _worker_lock = threading.Lock()
 
 def _get_supabase_url() -> str | None:
-    if not PROJECT_REF or not SERVICE_KEY:
+    ref = _get_clean_project_ref()
+    key = _get_clean_service_key()
+    if not ref or not key:
         return None
-    return f"https://{PROJECT_REF}.supabase.co/storage/v1/object/{BUCKET_NAME}/{DB_FILENAME}"
+    bucket = BUCKET_NAME.strip().strip("'\"")
+    return f"https://{ref}.supabase.co/storage/v1/object/{bucket}/{DB_FILENAME}"
 
 def download_db(local_path: str | Path) -> bool:
     """
@@ -29,12 +45,16 @@ def download_db(local_path: str | Path) -> bool:
     Returns True if successfully downloaded, False otherwise.
     """
     url = _get_supabase_url()
-    if not url:
+    key = _get_clean_service_key()
+    if not url or not key:
         logger.info("Cloud database sync: Disabled (SUPABASE_PROJECT_REF/SERVICE_ROLE_KEY not set).")
         return False
 
     logger.info("Cloud database sync: Attempting to download database file from cloud storage...")
-    headers = {"Authorization": f"Bearer {SERVICE_KEY}"}
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "apikey": key
+    }
     
     try:
         with httpx.Client(timeout=30.0) as client:
@@ -60,7 +80,8 @@ def perform_upload(local_path: str | Path) -> bool:
     Synchronously uploads the local database file to Supabase Storage.
     """
     url = _get_supabase_url()
-    if not url:
+    key = _get_clean_service_key()
+    if not url or not key:
         return False
 
     local_path = Path(local_path)
@@ -69,7 +90,8 @@ def perform_upload(local_path: str | Path) -> bool:
         return False
 
     headers = {
-        "Authorization": f"Bearer {SERVICE_KEY}",
+        "Authorization": f"Bearer {key}",
+        "apikey": key,
         "x-upsert": "true",
         "Content-Type": "application/x-sqlite3"
     }
@@ -130,7 +152,9 @@ def trigger_upload(local_path: str | Path):
     Queues the request to be processed by a background worker thread.
     """
     global _worker_started
-    if not PROJECT_REF or not SERVICE_KEY:
+    ref = _get_clean_project_ref()
+    key = _get_clean_service_key()
+    if not ref or not key:
         return
 
     # Start the worker thread lazily on first trigger
