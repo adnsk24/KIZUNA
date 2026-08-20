@@ -21,9 +21,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(na
 logger = logging.getLogger("kizuna.main")
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
-DATA_FILE = ROOT_DIR / "frontend" / "public" / "data" / "namaste_prototype_300_tm2_clean.csv"
+DATA_FILE = Path(__file__).resolve().parent / "data" / "namaste_prototype_300_tm2_clean.csv"
 if not DATA_FILE.exists():
-    DATA_FILE = Path(__file__).resolve().parent / "data" / "namaste_prototype_300_tm2_clean.csv"
+    DATA_FILE = ROOT_DIR / "frontend" / "public" / "data" / "namaste_prototype_300_tm2_clean.csv"
 DB_FILE = Path(__file__).resolve().parents[1] / "kizuna.db"
 
 app = FastAPI(

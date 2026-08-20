@@ -8,7 +8,9 @@ from typing import Any
 logger = logging.getLogger("kizuna.icd11_client")
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
-DATA_FILE = ROOT_DIR / "frontend" / "public" / "data" / "namaste_prototype_300_tm2_clean.csv"
+DATA_FILE = Path(__file__).resolve().parent / "data" / "namaste_prototype_300_tm2_clean.csv"
+if not DATA_FILE.exists():
+    DATA_FILE = ROOT_DIR / "frontend" / "public" / "data" / "namaste_prototype_300_tm2_clean.csv"
 
 
 class ICD11APIError(Exception):
