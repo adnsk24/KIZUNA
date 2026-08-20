@@ -72,4 +72,37 @@ export function getAnalyticsSummaryApi() {
   return request("/api/analytics/summary");
 }
 
+export function getEncounterFhirApi(encounterId) {
+  return request(`/api/encounters/${encounterId}/fhir`);
+}
+
+export function listPatientsApi() {
+  return request("/api/patients");
+}
+
+export function getPatientApi(patientId) {
+  return request(`/api/patients/${patientId}`);
+}
+
+export function createPatientApi(patient) {
+  return request("/api/patients", {
+    method: "POST",
+    body: JSON.stringify(patient),
+  });
+}
+
+export function createPrescriptionApi(encounterId, prescription) {
+  return request(`/api/encounters/${encounterId}/prescriptions`, {
+    method: "POST",
+    body: JSON.stringify(prescription),
+  });
+}
+
+export function createObservationApi(encounterId, observation) {
+  return request(`/api/encounters/${encounterId}/observations`, {
+    method: "POST",
+    body: JSON.stringify(observation),
+  });
+}
+
 export { API_BASE_URL };

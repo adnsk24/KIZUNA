@@ -6,9 +6,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import logging
+
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+
+from app.icd11_client import ICD11APIError, ICD11MappingNotFoundError
+from app.mapping_service import get_or_fetch_mapping, save_mapping_to_db, get_mapping_from_db
+from app.fhir_service import build_fhir_bundle
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logger = logging.getLogger("kizuna.main")
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 DATA_FILE = ROOT_DIR / "frontend" / "public" / "data" / "namaste_prototype_300_tm2_clean.csv"
@@ -51,6 +60,8 @@ class EncounterCreate(BaseModel):
     long_definition: str = ""
     namaste_term_diacritical: str = ""
     namaste_term_devanagari: str = ""
+    prescriptions: list[dict[str, Any]] | None = None
+    observations: list[dict[str, Any]] | None = None
 
 
 class ReviewCreate(BaseModel):
@@ -58,6 +69,32 @@ class ReviewCreate(BaseModel):
     decision: str = Field(pattern="^(REVIEW|APPROVED|REJECTED)$")
     reviewer: str = "Clinical Reviewer"
     notes: str = ""
+
+
+class PatientCreate(BaseModel):
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    gender: str = ""
+    date_of_birth: str = ""
+    age: int | None = None
+    abha_id: str = ""
+
+
+class PrescriptionCreate(BaseModel):
+    medication: str = Field(min_length=1)
+    dosage: str = ""
+    frequency: str = ""
+    route: str = ""
+    duration: str = ""
+    status: str = "active"
+
+
+class ObservationCreate(BaseModel):
+    observation_type: str = Field(min_length=1)
+    value: str = ""
+    unit: str = ""
+    status: str = "final"
+    observed_at: str = ""
 
 
 def db_connection() -> sqlite3.Connection:
@@ -116,6 +153,82 @@ def initialize_database() -> None:
             )
             """
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS patients (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                gender TEXT NOT NULL DEFAULT '',
+                date_of_birth TEXT NOT NULL DEFAULT '',
+                age INTEGER,
+                abha_id TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS prescriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                encounter_id INTEGER NOT NULL,
+                medication TEXT NOT NULL,
+                dosage TEXT NOT NULL DEFAULT '',
+                frequency TEXT NOT NULL DEFAULT '',
+                route TEXT NOT NULL DEFAULT '',
+                duration TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (encounter_id) REFERENCES encounters(id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS observations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                encounter_id INTEGER NOT NULL,
+                observation_type TEXT NOT NULL,
+                value TEXT NOT NULL DEFAULT '',
+                unit TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'final',
+                observed_at TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (encounter_id) REFERENCES encounters(id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS icd11_namaste_mappings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                namaste_code TEXT NOT NULL UNIQUE,
+                namaste_term TEXT NOT NULL DEFAULT '',
+                namaste_english TEXT NOT NULL DEFAULT '',
+                icd11_code TEXT NOT NULL DEFAULT '',
+                icd11_term TEXT NOT NULL DEFAULT '',
+                icd11_uri TEXT NOT NULL DEFAULT '',
+                mapping_class TEXT NOT NULL DEFAULT 'UNMAPPED',
+                mapping_status TEXT NOT NULL DEFAULT 'UNMAPPED',
+                relationship TEXT NOT NULL DEFAULT '',
+                confidence REAL,
+                source TEXT NOT NULL DEFAULT '',
+                version TEXT NOT NULL DEFAULT '',
+                biomedical_code TEXT NOT NULL DEFAULT '',
+                biomedical_term TEXT NOT NULL DEFAULT '',
+                short_definition TEXT NOT NULL DEFAULT '',
+                long_definition TEXT NOT NULL DEFAULT '',
+                namaste_term_diacritical TEXT NOT NULL DEFAULT '',
+                namaste_term_devanagari TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_verified TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_namaste_code_unique ON icd11_namaste_mappings(namaste_code)"
+        )
+        
         migrations = {
             "tm2_uri": "TEXT NOT NULL DEFAULT ''",
             "mapping_status": "TEXT NOT NULL DEFAULT 'UNMAPPED'",
@@ -144,9 +257,52 @@ def normalize(value: Any) -> str:
     return str(value or "").strip().lower()
 
 
+def format_mapping_for_api(mapping: dict[str, Any]) -> dict[str, Any]:
+    """Formats database mapping dict to preserve compatibility with existing frontend keys."""
+    return {
+        "NAMASTE_CODE": mapping.get("namaste_code", ""),
+        "NAMASTE_TERM": mapping.get("namaste_term", ""),
+        "NAMASTE_ENGLISH": mapping.get("namaste_english", ""),
+        "TM2_CODE": mapping.get("icd11_code", ""),
+        "TM2_TERM": mapping.get("icd11_term", ""),
+        "TM2_URI": mapping.get("icd11_uri", ""),
+        "MAPPING_CLASS": mapping.get("mapping_class", "UNMAPPED"),
+        "MAPPING_STATUS": mapping.get("mapping_status", "UNMAPPED"),
+        "RELATIONSHIP": mapping.get("relationship", ""),
+        "CONFIDENCE": mapping.get("confidence"),
+        "SOURCE": mapping.get("source", ""),
+        "VERSION": mapping.get("version", ""),
+        "BIOMEDICAL_CODE": mapping.get("biomedical_code", ""),
+        "BIOMEDICAL_TERM": mapping.get("biomedical_term", ""),
+        "SHORT_DEFINITION": mapping.get("short_definition", ""),
+        "LONG_DEFINITION": mapping.get("long_definition", ""),
+        "NAMASTE_TERM_DIACRITICAL": mapping.get("namaste_term_diacritical", ""),
+        "NAMASTE_TERM_DEVANAGARI": mapping.get("namaste_term_devanagari", ""),
+        **mapping,
+    }
+
+
 @app.on_event("startup")
 def startup() -> None:
     initialize_database()
+    
+    # Seed demo patients if they don't exist
+    demo_patients = [
+        {"id": "PT-001", "name": "Meera Joshi", "age": 45, "gender": "Female"},
+        {"id": "PT-002", "name": "Ramesh Patel", "age": 52, "gender": "Male"},
+        {"id": "PT-003", "name": "Anita Verma", "age": 34, "gender": "Female"},
+        {"id": "PT-004", "name": "Suresh Kumar", "age": 60, "gender": "Male"},
+    ]
+    created_at = datetime.now(timezone.utc).isoformat()
+    with db_connection() as connection:
+        for p in demo_patients:
+            existing = connection.execute("SELECT id FROM patients WHERE id = ?", (p["id"],)).fetchone()
+            if not existing:
+                connection.execute(
+                    "INSERT INTO patients (id, name, age, gender, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (p["id"], p["name"], p["age"], p["gender"], created_at)
+                )
+        connection.commit()
 
 
 @app.get("/api/health", tags=["System"])
@@ -170,19 +326,42 @@ def list_terminology(
     }
 
 
+@app.get("/api/mappings/cached", tags=["Terminology Mapping"])
+def list_cached_mappings() -> dict[str, Any]:
+    """Retrieve all NAMASTE ↔ ICD-11 mappings currently cached in the local database."""
+    with db_connection() as connection:
+        rows = connection.execute("SELECT * FROM icd11_namaste_mappings ORDER BY id DESC").fetchall()
+    results = [format_mapping_for_api(dict(row)) for row in rows]
+    return {"count": len(results), "results": results}
+
+
 @app.get("/api/terminology/search", tags=["Terminology Mapping"])
 def search_terminology(
     q: str = Query(min_length=1),
     limit: int = Query(default=12, ge=1, le=50),
 ) -> dict[str, Any]:
     query = normalize(q)
-    results: list[dict[str, str]] = []
+    results: list[dict[str, Any]] = []
+    
+    # Try cache / API fallback for exact code or term
+    try:
+        mapping = get_or_fetch_mapping(q)
+        if mapping:
+            results.append(format_mapping_for_api(mapping))
+    except Exception:
+        pass
+
     searchable_fields = (
         "NAMASTE_PRIMARY_CODE", "NAMASTE_CODE", "NAMASTE_TERM", "NAMASTE_ENGLISH",
         "NAMASTE_TERM_DIACRITICAL", "NAMASTE_TERM_DEVANAGARI", "TM2_CODE", "TM2_TERM",
         "SHORT_DEFINITION", "LONG_DEFINITION", "BIOMEDICAL_CODE", "BIOMEDICAL_TERM", "RELATIONSHIP",
     )
+    existing_codes = {r.get("NAMASTE_CODE") or r.get("namaste_code") for r in results if r}
+    
     for concept in load_terminology():
+        code = concept.get("NAMASTE_CODE")
+        if code in existing_codes:
+            continue
         if any(query in normalize(concept.get(field)) for field in searchable_fields):
             results.append(concept)
         if len(results) >= limit:
@@ -192,10 +371,15 @@ def search_terminology(
 
 @app.get("/api/terminology/{namaste_code}", tags=["Terminology Mapping"])
 def get_terminology(namaste_code: str) -> dict[str, Any]:
-    for concept in load_terminology():
-        if normalize(concept.get("NAMASTE_CODE")) == normalize(namaste_code):
-            return concept
-    raise HTTPException(status_code=404, detail="Terminology concept not found.")
+    try:
+        mapping = get_or_fetch_mapping(namaste_code)
+        return format_mapping_for_api(mapping)
+    except ICD11MappingNotFoundError as err:
+        raise HTTPException(status_code=404, detail=str(err))
+    except ICD11APIError as err:
+        raise HTTPException(status_code=502, detail=str(err))
+    except Exception as err:
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {err}")
 
 
 @app.post("/api/encounters", status_code=201, tags=["Encounters"])
@@ -220,8 +404,50 @@ def create_encounter(payload: EncounterCreate) -> dict[str, Any]:
                 payload.namaste_term_diacritical, payload.namaste_term_devanagari, created_at,
             ),
         )
-        connection.commit()
         encounter_id = cursor.lastrowid
+        
+        # Save optional prescriptions
+        if payload.prescriptions:
+            for rx in payload.prescriptions:
+                connection.execute(
+                    """
+                    INSERT INTO prescriptions (
+                        encounter_id, medication, dosage, frequency, route, duration, status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        encounter_id, 
+                        rx.get("medication", ""), 
+                        rx.get("dosage", ""), 
+                        rx.get("frequency", ""), 
+                        rx.get("route", ""), 
+                        rx.get("duration", ""), 
+                        rx.get("status", "active"), 
+                        created_at
+                    )
+                )
+                
+        # Save optional observations
+        if payload.observations:
+            for obs in payload.observations:
+                connection.execute(
+                    """
+                    INSERT INTO observations (
+                        encounter_id, observation_type, value, unit, status, observed_at, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        encounter_id, 
+                        obs.get("observation_type", ""), 
+                        obs.get("value", ""), 
+                        obs.get("unit", ""), 
+                        obs.get("status", "final"), 
+                        obs.get("observed_at", ""), 
+                        created_at
+                    )
+                )
+                
+        connection.commit()
     return {"id": encounter_id, "status": "created", "created_at": created_at}
 
 
@@ -242,6 +468,110 @@ def get_encounter(encounter_id: int) -> dict[str, Any]:
     if row is None:
         raise HTTPException(status_code=404, detail="Encounter not found.")
     return dict(row)
+
+
+@app.get("/api/encounters/{encounter_id}/fhir", tags=["FHIR Interoperability"])
+def get_encounter_fhir_bundle(encounter_id: int) -> dict[str, Any]:
+    """Generate a FHIR R4 Bundle for the specified clinical encounter."""
+    with db_connection() as connection:
+        encounter = connection.execute("SELECT * FROM encounters WHERE id = ?", (encounter_id,)).fetchone()
+        if not encounter:
+            raise HTTPException(status_code=404, detail="Encounter not found.")
+        encounter_dict = dict(encounter)
+        
+        patient = connection.execute("SELECT * FROM patients WHERE id = ?", (encounter_dict["patient_id"],)).fetchone()
+        if not patient:
+            # Fallback to minimal patient dict if missing (shouldn't happen with seeded data)
+            patient_dict = {"id": encounter_dict["patient_id"], "name": f"Patient {encounter_dict['patient_id']}"}
+        else:
+            patient_dict = dict(patient)
+            
+        prescriptions = connection.execute("SELECT * FROM prescriptions WHERE encounter_id = ?", (encounter_id,)).fetchall()
+        observations = connection.execute("SELECT * FROM observations WHERE encounter_id = ?", (encounter_id,)).fetchall()
+        
+    mapping_data = get_mapping_from_db(encounter_dict.get("namaste_code", ""))
+    
+    return build_fhir_bundle(
+        patient=patient_dict,
+        encounter=encounter_dict,
+        mapping=mapping_data,
+        prescriptions=[dict(rx) for rx in prescriptions] if prescriptions else None,
+        observations=[dict(obs) for obs in observations] if observations else None,
+    )
+
+
+@app.post("/api/patients", status_code=201, tags=["Patients"])
+def create_patient(payload: PatientCreate) -> dict[str, Any]:
+    created_at = datetime.now(timezone.utc).isoformat()
+    with db_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO patients (id, name, gender, date_of_birth, age, abha_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name=excluded.name, gender=excluded.gender, date_of_birth=excluded.date_of_birth,
+                age=excluded.age, abha_id=excluded.abha_id
+            """,
+            (payload.id, payload.name, payload.gender, payload.date_of_birth, payload.age, payload.abha_id, created_at)
+        )
+        connection.commit()
+    return {"id": payload.id, "status": "saved"}
+
+
+@app.get("/api/patients", tags=["Patients"])
+def list_patients() -> dict[str, Any]:
+    with db_connection() as connection:
+        rows = connection.execute("SELECT * FROM patients ORDER BY name").fetchall()
+    return {"count": len(rows), "results": [dict(row) for row in rows]}
+
+
+@app.get("/api/patients/{patient_id}", tags=["Patients"])
+def get_patient(patient_id: str) -> dict[str, Any]:
+    with db_connection() as connection:
+        row = connection.execute("SELECT * FROM patients WHERE id = ?", (patient_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Patient not found.")
+    return dict(row)
+
+
+@app.post("/api/encounters/{encounter_id}/prescriptions", status_code=201, tags=["Encounters"])
+def create_prescription(encounter_id: int, payload: PrescriptionCreate) -> dict[str, Any]:
+    created_at = datetime.now(timezone.utc).isoformat()
+    with db_connection() as connection:
+        encounter = connection.execute("SELECT id FROM encounters WHERE id = ?", (encounter_id,)).fetchone()
+        if not encounter:
+            raise HTTPException(status_code=404, detail="Encounter not found.")
+        
+        cursor = connection.execute(
+            """
+            INSERT INTO prescriptions (
+                encounter_id, medication, dosage, frequency, route, duration, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (encounter_id, payload.medication, payload.dosage, payload.frequency, payload.route, payload.duration, payload.status, created_at)
+        )
+        connection.commit()
+    return {"id": cursor.lastrowid, "status": "created"}
+
+
+@app.post("/api/encounters/{encounter_id}/observations", status_code=201, tags=["Encounters"])
+def create_observation(encounter_id: int, payload: ObservationCreate) -> dict[str, Any]:
+    created_at = datetime.now(timezone.utc).isoformat()
+    with db_connection() as connection:
+        encounter = connection.execute("SELECT id FROM encounters WHERE id = ?", (encounter_id,)).fetchone()
+        if not encounter:
+            raise HTTPException(status_code=404, detail="Encounter not found.")
+        
+        cursor = connection.execute(
+            """
+            INSERT INTO observations (
+                encounter_id, observation_type, value, unit, status, observed_at, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (encounter_id, payload.observation_type, payload.value, payload.unit, payload.status, payload.observed_at, created_at)
+        )
+        connection.commit()
+    return {"id": cursor.lastrowid, "status": "created"}
 
 
 @app.post("/api/reviews", status_code=201, tags=["Human Review"])

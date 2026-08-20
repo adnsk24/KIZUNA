@@ -67,6 +67,7 @@ function Encounters() {
 
   return (
     <div className="mx-auto max-w-7xl space-y-6 pb-8">
+      
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <div className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-emerald-500" /><span className="text-xs font-medium text-emerald-700">API connected</span></div>
@@ -124,6 +125,8 @@ function Encounters() {
           </div>
         )}
       </section>
+
+
     </div>
   );
 }

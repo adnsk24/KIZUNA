@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, CheckCircle2, Search, AlertTriangle, Loader2, XCircle, FileCheck2, Database } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ArrowLeft, CheckCircle2, Search, AlertTriangle, Loader2, XCircle, FileCheck2, Database, Plus } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 import { searchTerminologyApi, createEncounterApi } from "../services/apiService";
 
@@ -57,6 +57,11 @@ export default function NewEncounterApi() {
   const [savedEncounter, setSavedEncounter] = useState(null);
   const [error, setError] = useState("");
 
+  const [prescriptions, setPrescriptions] = useState([]);
+  const [observations, setObservations] = useState([]);
+  
+
+
   const status = selectedConcept?.MAPPING_CLASS || selectedConcept?.MAPPING_STATUS || "UNMAPPED";
   const canSave = Boolean(selectedConcept) && !saving;
 
@@ -79,10 +84,33 @@ export default function NewEncounterApi() {
     setError("");
   };
 
+  const handleAddPrescription = () => {
+    setPrescriptions([...prescriptions, { medication: "", dosage: "", frequency: "", duration: "" }]);
+  };
+
+  const updatePrescription = (index, field, value) => {
+    const newRx = [...prescriptions];
+    newRx[index][field] = value;
+    setPrescriptions(newRx);
+  };
+
+  const handleAddObservation = () => {
+    setObservations([...observations, { observation_type: "", value: "", unit: "" }]);
+  };
+
+  const updateObservation = (index, field, value) => {
+    const newObs = [...observations];
+    newObs[index][field] = value;
+    setObservations(newObs);
+  };
+
   const handleSave = async () => {
     if (!selectedConcept) return;
     try {
       setSaving(true); setError("");
+      const validPrescriptions = prescriptions.filter(rx => rx.medication.trim() !== "");
+      const validObservations = observations.filter(obs => obs.observation_type.trim() !== "");
+      
       const result = await createEncounterApi({
         patient_id: patient.id,
         diagnosis: diagnosis.trim(),
@@ -95,11 +123,15 @@ export default function NewEncounterApi() {
         mapping_class: status,
         confidence: selectedConcept.CONFIDENCE === "" || selectedConcept.CONFIDENCE == null ? null : Number(selectedConcept.CONFIDENCE),
         source: selectedConcept.SOURCE || "",
+        prescriptions: validPrescriptions,
+        observations: validObservations,
       });
       setSavedEncounter(result);
     } catch (err) { setError(`Unable to save encounter: ${err.message}`); }
     finally { setSaving(false); }
   };
+  
+
 
   return <div className="space-y-6">
     <Link to={`/patients/${patient.id}`} className="inline-flex items-center gap-2 text-sm font-medium text-slate-500 transition hover:text-slate-900"><ArrowLeft size={16} />Back to patient</Link>
@@ -115,11 +147,56 @@ export default function NewEncounterApi() {
       <div><label htmlFor="notes-api" className="mb-2 block text-xs font-semibold uppercase tracking-wide text-slate-500">Clinical notes</label><textarea id="notes-api" value={clinicalNotes} onChange={(e) => setClinicalNotes(e.target.value)} rows={4} placeholder="Symptoms, observations, examination notes, or context..." className="w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800 outline-none transition focus:border-blue-300 focus:bg-white focus:ring-4 focus:ring-blue-50" /></div>
     </div></section>
 
+    <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="flex items-center justify-between border-b border-slate-100 px-6 py-5">
+        <div>
+          <h2 className="text-sm font-semibold text-slate-950">Prescriptions</h2>
+          <p className="mt-1 text-xs text-slate-500">Optional: Add medications to include in FHIR output.</p>
+        </div>
+        <button onClick={handleAddPrescription} className="inline-flex items-center gap-1.5 rounded-md bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-200">
+          <Plus size={14} /> Add Medication
+        </button>
+      </div>
+      {prescriptions.length > 0 && <div className="space-y-4 p-6">
+        {prescriptions.map((rx, idx) => (
+          <div key={idx} className="flex gap-3">
+            <input placeholder="Medication (e.g. Ashwagandha)" value={rx.medication} onChange={e => updatePrescription(idx, "medication", e.target.value)} className="w-1/3 rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+            <input placeholder="Dosage" value={rx.dosage} onChange={e => updatePrescription(idx, "dosage", e.target.value)} className="w-1/5 rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+            <input placeholder="Frequency" value={rx.frequency} onChange={e => updatePrescription(idx, "frequency", e.target.value)} className="w-1/5 rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+            <input placeholder="Duration" value={rx.duration} onChange={e => updatePrescription(idx, "duration", e.target.value)} className="w-1/5 rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+          </div>
+        ))}
+      </div>}
+    </section>
+
+    <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="flex items-center justify-between border-b border-slate-100 px-6 py-5">
+        <div>
+          <h2 className="text-sm font-semibold text-slate-950">Observations</h2>
+          <p className="mt-1 text-xs text-slate-500">Optional: Add lab results or vitals.</p>
+        </div>
+        <button onClick={handleAddObservation} className="inline-flex items-center gap-1.5 rounded-md bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-200">
+          <Plus size={14} /> Add Observation
+        </button>
+      </div>
+      {observations.length > 0 && <div className="space-y-4 p-6">
+        {observations.map((obs, idx) => (
+          <div key={idx} className="flex gap-3">
+            <input placeholder="Type (e.g. Blood Pressure)" value={obs.observation_type} onChange={e => updateObservation(idx, "observation_type", e.target.value)} className="w-1/3 rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+            <input placeholder="Value" value={obs.value} onChange={e => updateObservation(idx, "value", e.target.value)} className="w-1/3 rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+            <input placeholder="Unit" value={obs.unit} onChange={e => updateObservation(idx, "unit", e.target.value)} className="w-1/3 rounded-lg border border-slate-200 px-3 py-2 text-sm" />
+          </div>
+        ))}
+      </div>}
+    </section>
+
     {selectedConcept && <MappingPreview concept={selectedConcept} />}
 
     {error && <div className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800"><XCircle size={18} className="mt-0.5 shrink-0" />{error}</div>}
     {savedEncounter && <div className="flex items-start gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4"><CheckCircle2 size={18} className="mt-0.5 shrink-0 text-emerald-600" /><div><p className="text-sm font-semibold text-emerald-900">Encounter saved successfully</p><p className="mt-1 text-xs text-emerald-700">Database encounter ID: <span className="font-mono">{savedEncounter.id}</span></p></div></div>}
 
     <div className="flex flex-col-reverse gap-3 border-t border-slate-200 pt-5 sm:flex-row sm:items-center sm:justify-end"><Link to={`/patients/${patient.id}`} className="inline-flex justify-center rounded-xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-600 transition hover:bg-slate-50">Cancel</Link><button type="button" disabled={!canSave} onClick={handleSave} className="inline-flex items-center justify-center gap-2 rounded-xl bg-slate-950 px-6 py-3 text-sm font-semibold text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40">{saving && <Loader2 size={16} className="animate-spin" />}{saving ? "Saving encounter..." : "Save encounter"}</button></div>
+  
+
   </div>;
 }
