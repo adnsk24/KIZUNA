@@ -1,14 +1,7 @@
 import { useEffect, useState } from "react";
 import { ArrowLeft, CheckCircle2, Search, AlertTriangle, Loader2, XCircle, FileCheck2, Database, Plus } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
-import { searchTerminologyApi, createEncounterApi } from "../services/apiService";
-
-const patientData = {
-  "PT-001": { name: "Meera Joshi", age: 45, gender: "Female", id: "PT-001" },
-  "PT-002": { name: "Ramesh Patel", age: 52, gender: "Male", id: "PT-002" },
-  "PT-003": { name: "Anita Verma", age: 34, gender: "Female", id: "PT-003" },
-  "PT-004": { name: "Suresh Kumar", age: 60, gender: "Male", id: "PT-004" },
-};
+import { searchTerminologyApi, createEncounterApi, getPatientApi } from "../services/apiService";
 
 const statusMeta = {
   DIRECT_CODE_ALIGNMENT: { label: "Direct alignment", classes: "border-emerald-200 bg-emerald-50 text-emerald-700", icon: CheckCircle2 },
@@ -46,7 +39,8 @@ function MappingPreview({ concept }) {
 
 export default function NewEncounterApi() {
   const { patientId } = useParams();
-  const patient = patientData[patientId] || patientData["PT-001"];
+  const [patient, setPatient] = useState(null);
+  const [loadingPatient, setLoadingPatient] = useState(true);
   const [diagnosis, setDiagnosis] = useState("");
   const [clinicalNotes, setClinicalNotes] = useState("");
   const [suggestions, setSuggestions] = useState([]);
@@ -59,11 +53,27 @@ export default function NewEncounterApi() {
 
   const [prescriptions, setPrescriptions] = useState([]);
   const [observations, setObservations] = useState([]);
-  
-
 
   const status = selectedConcept?.MAPPING_CLASS || selectedConcept?.MAPPING_STATUS || "UNMAPPED";
   const canSave = Boolean(selectedConcept) && !saving;
+
+  // Fetch patient profile on mount
+  useEffect(() => {
+    async function fetchPatientProfile() {
+      try {
+        setLoadingPatient(true);
+        setError("");
+        const data = await getPatientApi(patientId);
+        setPatient(data);
+      } catch (err) {
+        console.error("Failed to load patient EMR:", err);
+        setError("Failed to load patient record from EMR database.");
+      } finally {
+        setLoadingPatient(false);
+      }
+    }
+    fetchPatientProfile();
+  }, [patientId]);
 
   useEffect(() => {
     const query = diagnosis.trim();
@@ -105,7 +115,7 @@ export default function NewEncounterApi() {
   };
 
   const handleSave = async () => {
-    if (!selectedConcept) return;
+    if (!selectedConcept || !patient) return;
     try {
       setSaving(true); setError("");
       const validPrescriptions = prescriptions.filter(rx => rx.medication.trim() !== "");
@@ -131,7 +141,30 @@ export default function NewEncounterApi() {
     finally { setSaving(false); }
   };
   
+  if (loadingPatient) {
+    return (
+      <div className="flex h-[350px] items-center justify-center">
+        <div className="text-center space-y-3">
+          <Loader2 className="animate-spin mx-auto text-slate-400" size={36} />
+          <p className="text-sm text-slate-500 font-medium">Loading patient clinical record...</p>
+        </div>
+      </div>
+    );
+  }
 
+  if (!patient) {
+    return (
+      <div className="space-y-6">
+        <Link to="/patients" className="inline-flex items-center gap-2 text-sm font-medium text-slate-500 transition hover:text-slate-900">
+          <ArrowLeft size={16} /> Back to Patients
+        </Link>
+        <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800 flex gap-2">
+          <AlertTriangle className="shrink-0 mt-0.5" size={17} />
+          {error || `Failed to load patient record with EMR ID "${patientId}".`}
+        </div>
+      </div>
+    );
+  }
 
   return <div className="space-y-6">
     <Link to={`/patients/${patient.id}`} className="inline-flex items-center gap-2 text-sm font-medium text-slate-500 transition hover:text-slate-900"><ArrowLeft size={16} />Back to patient</Link>
@@ -196,7 +229,6 @@ export default function NewEncounterApi() {
     {savedEncounter && <div className="flex items-start gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4"><CheckCircle2 size={18} className="mt-0.5 shrink-0 text-emerald-600" /><div><p className="text-sm font-semibold text-emerald-900">Encounter saved successfully</p><p className="mt-1 text-xs text-emerald-700">Database encounter ID: <span className="font-mono">{savedEncounter.id}</span></p></div></div>}
 
     <div className="flex flex-col-reverse gap-3 border-t border-slate-200 pt-5 sm:flex-row sm:items-center sm:justify-end"><Link to={`/patients/${patient.id}`} className="inline-flex justify-center rounded-xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-600 transition hover:bg-slate-50">Cancel</Link><button type="button" disabled={!canSave} onClick={handleSave} className="inline-flex items-center justify-center gap-2 rounded-xl bg-slate-950 px-6 py-3 text-sm font-semibold text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40">{saving && <Loader2 size={16} className="animate-spin" />}{saving ? "Saving encounter..." : "Save encounter"}</button></div>
-  
 
   </div>;
 }

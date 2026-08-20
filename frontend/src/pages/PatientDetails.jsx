@@ -3,66 +3,110 @@ import {
   CalendarDays,
   Plus,
   ArrowRight,
+  Loader2,
+  AlertCircle,
 } from "lucide-react";
+import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import { getPatientApi, listEncountersApi } from "../services/apiService";
 
-const patientData = {
-  "PT-001": {
-    name: "Meera Joshi",
-    age: 45,
-    gender: "Female",
-    id: "PT-001",
-  },
-
-  "PT-002": {
-    name: "Ramesh Patel",
-    age: 52,
-    gender: "Male",
-    id: "PT-002",
-  },
-
-  "PT-003": {
-    name: "Anita Verma",
-    age: 34,
-    gender: "Female",
-    id: "PT-003",
-  },
-
-  "PT-004": {
-    name: "Suresh Kumar",
-    age: 60,
-    gender: "Male",
-    id: "PT-004",
-  },
-};
-
-const encounters = [
-  {
-    id: "ENC-001",
-    date: "18 Aug 2026",
-    diagnosis: "Vataja Prameha",
-    status: "Mapped",
-  },
-  {
-    id: "ENC-002",
-    date: "12 Aug 2026",
-    diagnosis: "Amlapitta",
-    status: "Review",
-  },
-];
+function formatDate(isoString) {
+  if (!isoString) return "Date unknown";
+  try {
+    const date = new Date(isoString);
+    return date.toLocaleDateString("en-IN", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric"
+    });
+  } catch {
+    return isoString;
+  }
+}
 
 function PatientDetails() {
   const { patientId } = useParams();
+  const [patient, setPatient] = useState(null);
+  const [encounters, setEncounters] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
-  const patient =
-    patientData[patientId] || patientData["PT-001"];
+  useEffect(() => {
+    async function loadPatientDetails() {
+      try {
+        setLoading(true);
+        setError(null);
+        
+        // Fetch patient details
+        const profile = await getPatientApi(patientId);
+        setPatient(profile);
+        
+        // Fetch patient encounters
+        const encounterList = await listEncountersApi(patientId);
+        setEncounters(encounterList.results || []);
+      } catch (err) {
+        console.error("Failed to load patient EMR:", err);
+        setError("Unable to load patient profile or encounters from EMR database.");
+      } finally {
+        setLoading(false);
+      }
+    }
+    loadPatientDetails();
+  }, [patientId]);
+
+  if (loading) {
+    return (
+      <div className="flex h-[350px] items-center justify-center">
+        <div className="text-center space-y-3">
+          <Loader2 className="animate-spin mx-auto text-slate-400" size={36} />
+          <p className="text-sm text-slate-500 font-medium">Loading clinical record...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="space-y-6">
+        <Link
+          to="/patients"
+          className="inline-flex items-center gap-2 text-sm text-slate-500 hover:text-slate-900 transition"
+        >
+          <ArrowLeft size={16} />
+          Back to Patients
+        </Link>
+        <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800 flex gap-2">
+          <AlertCircle size={17} className="shrink-0 mt-0.5" />
+          {error}
+        </div>
+      </div>
+    );
+  }
+
+  if (!patient) {
+    return (
+      <div className="space-y-6">
+        <Link
+          to="/patients"
+          className="inline-flex items-center gap-2 text-sm text-slate-500 hover:text-slate-900 transition"
+        >
+          <ArrowLeft size={16} />
+          Back to Patients
+        </Link>
+        <div className="rounded-lg border border-slate-200 bg-white p-8 text-center text-sm text-slate-500 space-y-2">
+          <p className="font-semibold text-slate-800">Patient Not Found</p>
+          <p>No patient record exists with EMR ID "{patientId}".</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
       {/* Back */}
       <Link
         to="/patients"
-        className="inline-flex items-center gap-2 text-sm text-slate-500 hover:text-slate-900"
+        className="inline-flex items-center gap-2 text-sm text-slate-500 hover:text-slate-900 transition"
       >
         <ArrowLeft size={16} />
         Back to Patients
@@ -86,14 +130,20 @@ function PatientDetails() {
 
               <p className="mt-1 text-sm text-slate-500">
                 {patient.age} years · {patient.gender} ·{" "}
-                {patient.id}
+                <span className="font-mono text-xs">{patient.id}</span>
+                {patient.abha_id && (
+                  <>
+                    {" · "}
+                    <span className="font-mono text-xs text-slate-400">ABHA: {patient.abha_id}</span>
+                  </>
+                )}
               </p>
             </div>
           </div>
 
           <Link
             to={`/patients/${patient.id}/encounters/new`}
-            className="inline-flex w-fit items-center gap-2 rounded-md bg-slate-900 px-4 py-2.5 text-sm font-medium text-white hover:bg-slate-800"
+            className="inline-flex w-fit items-center gap-2 rounded-md bg-slate-900 px-4 py-2.5 text-sm font-medium text-white hover:bg-slate-800 transition"
           >
             <Plus size={16} />
             New Encounter
@@ -117,7 +167,7 @@ function PatientDetails() {
           {encounters.map((encounter) => (
             <div
               key={encounter.id}
-              className="flex flex-col gap-4 px-5 py-4 sm:flex-row sm:items-center sm:justify-between"
+              className="flex flex-col gap-4 px-5 py-4 sm:flex-row sm:items-center sm:justify-between hover:bg-slate-50/50"
             >
               <div className="flex items-start gap-3">
                 <div className="mt-0.5 text-slate-400">
@@ -129,8 +179,8 @@ function PatientDetails() {
                     {encounter.diagnosis}
                   </p>
 
-                  <p className="mt-1 text-xs text-slate-500">
-                    {encounter.date} · {encounter.id}
+                  <p className="mt-1 text-xs text-slate-500 font-mono">
+                    {formatDate(encounter.created_at)} · ENC-{encounter.id}
                   </p>
                 </div>
               </div>
@@ -138,24 +188,38 @@ function PatientDetails() {
               <div className="flex items-center gap-4">
                 <span
                   className={`rounded-md border px-2.5 py-1 text-xs font-medium ${
-                    encounter.status === "Mapped"
+                    encounter.mapping_class === "DIRECT_CODE_ALIGNMENT" || encounter.mapping_class === "CROSS_CODE_MAPPING"
                       ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                      : "border-amber-200 bg-amber-50 text-amber-700"
+                      : encounter.mapping_class === "FOUNDATION_CONCEPT_ONLY"
+                      ? "border-amber-200 bg-amber-50 text-amber-700"
+                      : "border-slate-200 bg-slate-50 text-slate-600"
                   }`}
                 >
-                  {encounter.status}
+                  {encounter.mapping_class === "DIRECT_CODE_ALIGNMENT"
+                    ? "Direct"
+                    : encounter.mapping_class === "CROSS_CODE_MAPPING"
+                    ? "Mapped"
+                    : encounter.mapping_class === "FOUNDATION_CONCEPT_ONLY"
+                    ? "Foundation"
+                    : "Unmapped"}
                 </span>
 
-                <button
-                  type="button"
-                  className="inline-flex items-center gap-1 text-sm font-medium text-slate-600 hover:text-slate-900"
+                <Link
+                  to={`/encounters`}
+                  className="inline-flex items-center gap-1 text-sm font-medium text-slate-600 hover:text-slate-900 transition"
                 >
                   View
                   <ArrowRight size={15} />
-                </button>
+                </Link>
               </div>
             </div>
           ))}
+
+          {encounters.length === 0 && (
+            <div className="px-5 py-10 text-center text-sm text-slate-500">
+              No previous clinical encounters recorded for this patient.
+            </div>
+          )}
         </div>
       </section>
     </div>
