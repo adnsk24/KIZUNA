@@ -15,12 +15,15 @@ from pydantic import BaseModel, Field
 from app.icd11_client import ICD11APIError, ICD11MappingNotFoundError
 from app.mapping_service import get_or_fetch_mapping, save_mapping_to_db, get_mapping_from_db
 from app.fhir_service import build_fhir_bundle
+from app.cloud_db import download_db, trigger_upload
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("kizuna.main")
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 DATA_FILE = ROOT_DIR / "frontend" / "public" / "data" / "namaste_prototype_300_tm2_clean.csv"
+if not DATA_FILE.exists():
+    DATA_FILE = Path(__file__).resolve().parent / "data" / "namaste_prototype_300_tm2_clean.csv"
 DB_FILE = Path(__file__).resolve().parents[1] / "kizuna.db"
 
 app = FastAPI(
@@ -284,6 +287,9 @@ def format_mapping_for_api(mapping: dict[str, Any]) -> dict[str, Any]:
 
 @app.on_event("startup")
 def startup() -> None:
+    # Attempt to download the database file from the cloud first
+    downloaded = download_db(DB_FILE)
+    
     initialize_database()
     
     # Seed demo patients if they don't exist
@@ -294,6 +300,7 @@ def startup() -> None:
         {"id": "PT-004", "name": "Suresh Kumar", "age": 60, "gender": "Male"},
     ]
     created_at = datetime.now(timezone.utc).isoformat()
+    seeded_any = False
     with db_connection() as connection:
         for p in demo_patients:
             existing = connection.execute("SELECT id FROM patients WHERE id = ?", (p["id"],)).fetchone()
@@ -302,7 +309,12 @@ def startup() -> None:
                     "INSERT INTO patients (id, name, age, gender, created_at) VALUES (?, ?, ?, ?, ?)",
                     (p["id"], p["name"], p["age"], p["gender"], created_at)
                 )
+                seeded_any = True
         connection.commit()
+        
+    # Trigger initial upload if we didn't download it from cloud, or if we seeded new patients
+    if not downloaded or seeded_any:
+        trigger_upload(DB_FILE)
 
 
 @app.get("/api/health", tags=["System"])
@@ -448,6 +460,7 @@ def create_encounter(payload: EncounterCreate) -> dict[str, Any]:
                 )
                 
         connection.commit()
+    trigger_upload(DB_FILE)
     return {"id": encounter_id, "status": "created", "created_at": created_at}
 
 
@@ -515,6 +528,7 @@ def create_patient(payload: PatientCreate) -> dict[str, Any]:
             (payload.id, payload.name, payload.gender, payload.date_of_birth, payload.age, payload.abha_id, created_at)
         )
         connection.commit()
+    trigger_upload(DB_FILE)
     return {"id": payload.id, "status": "saved"}
 
 
@@ -551,6 +565,7 @@ def create_prescription(encounter_id: int, payload: PrescriptionCreate) -> dict[
             (encounter_id, payload.medication, payload.dosage, payload.frequency, payload.route, payload.duration, payload.status, created_at)
         )
         connection.commit()
+    trigger_upload(DB_FILE)
     return {"id": cursor.lastrowid, "status": "created"}
 
 
@@ -571,6 +586,7 @@ def create_observation(encounter_id: int, payload: ObservationCreate) -> dict[st
             (encounter_id, payload.observation_type, payload.value, payload.unit, payload.status, payload.observed_at, created_at)
         )
         connection.commit()
+    trigger_upload(DB_FILE)
     return {"id": cursor.lastrowid, "status": "created"}
 
 
@@ -586,6 +602,7 @@ def create_review(payload: ReviewCreate) -> dict[str, Any]:
             (payload.encounter_id, payload.decision, payload.reviewer, payload.notes, reviewed_at),
         )
         connection.commit()
+    trigger_upload(DB_FILE)
     return {"id": cursor.lastrowid, "status": "recorded", "reviewed_at": reviewed_at}
 
 
@@ -641,6 +658,7 @@ def reset_demo_data() -> dict[str, Any]:
         connection.execute("DELETE FROM encounters")
         connection.execute("DELETE FROM sqlite_sequence WHERE name IN ('reviews', 'encounters')")
         connection.commit()
+    trigger_upload(DB_FILE)
     return {
         "status": "reset",
         "deleted_reviews": review_count,

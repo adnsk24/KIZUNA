@@ -117,6 +117,9 @@ def save_mapping_to_db(mapping: dict[str, Any]) -> dict[str, Any]:
         )
         conn.commit()
 
+    from app.cloud_db import trigger_upload
+    trigger_upload(DB_FILE)
+
     saved = get_mapping_from_db(namaste_code)
     if not saved:
         raise RuntimeError(f"Failed to retrieve mapping after saving for code: {namaste_code}")
